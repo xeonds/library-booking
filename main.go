@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"fmt"
 	"log"
 	"math/rand"
@@ -13,6 +14,9 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
+
+//go:embed index.html
+var fs embed.FS
 
 // database
 type Seat struct {
@@ -82,6 +86,14 @@ func InitRouter() {
 	r.GET("/seats", GetSeats)
 	r.POST("/seats/:seatID", SelectSeat)
 	r.POST("/seats/random", RandomSeat)
+	r.GET("/", func(c *gin.Context) {
+		content, err := fs.ReadFile("index.html")
+		if err != nil {
+			c.String(http.StatusInternalServerError, "读取文件失败")
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", content)
+	})
 }
 
 // controllers
