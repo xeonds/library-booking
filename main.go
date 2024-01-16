@@ -1,20 +1,19 @@
 package main
 
 import (
-	"fmt"
-	"log"
-	"math/rand"
+	"errors"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/spf13/viper"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
 )
 
-// database
+
+// data models
+type ReqeustQuery struct {
+	Name string
+	Time []string
+}
 type Seat struct {
 	gorm.Model
 	SeatID            int       `gorm:"uniqueIndex" json:"seat_id"`
@@ -24,64 +23,133 @@ type Seat struct {
 	SeatBookEndTime   time.Time `json:"seat_book_end_time"`
 }
 
-var db *gorm.DB
 var r *gin.Engine
 
-func InitDB() error {
-	var err error
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
-	err = viper.ReadInConfig()
-	if err != nil {
-		return err
-	}
-	user := viper.GetString("db.user")
-	pass := viper.GetString("db.pass")
-	host := viper.GetString("db.host")
-	port := viper.GetString("db.port")
-	name := viper.GetString("db.name")
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local", user, pass, host, port, name)
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("连接数据库失败：%v", err)
-	}
-	err = db.AutoMigrate(&Seat{})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func InitConfig() {
-	if _, err := os.Stat("config.yaml"); os.IsNotExist(err) {
-		viper.SetDefault("db.user", "user")
-		viper.SetDefault("db.pass", "pass")
-		viper.SetDefault("db.host", "127.0.0.1")
-		viper.SetDefault("db.port", "3306")
-		viper.SetDefault("db.name", "dbname")
-		viper.SetDefault("server.host", "127.0.0.1")
-		viper.SetDefault("server.port", "8080")
-		err = viper.WriteConfigAs("config.yaml")
-		if err != nil {
-			panic(err)
+func create[T any]() func(c *gin.Context) {
+	_create := func(model any) error {
+		if model == nil {
+			return errors.New("model is nil")
 		}
-		panic("请修改配置文件后重启程序")
+		return db.Create(model).Error
 	}
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
-	err := viper.ReadInConfig()
-	if err != nil {
-		panic(err)
+
+	return func(c *gin.Context) {
+		var model T
+		if err := c.ShouldBindJSON(&model); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error(), "data": model})
+			return
+		}
+		if err := _create(&model); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "data": model})
+			return
+		}
+		c.JSON(http.StatusCreated, model)
 	}
 }
 
-func InitRouter() {
-	r = gin.Default()
-	r.GET("/seats", GetSeats)
-	r.POST("/seats/:seatID", SelectSeat)
-	r.POST("/seats/random", RandomSeat)
+func get[T any]() func(c *gin.Context) {
+	_get := func(id string) (T, error) {
+		var model T
+		if err := db.First(&model, id).Error; err != nil {
+			return model, err
+		}
+		return model, nil
+	}
+	_getAll := func() ([]T, error) {
+		var models []T
+		if err := db.Find(&models).Error; err != nil {
+			return models, err
+		}
+		return models, nil
+	}
+
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		if id == "" {
+			models, err := _getAll()
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, models)
+		} else {
+			model, err := _get(id)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, model)
+		}
+	}
+}
+
+func update[T any]() func(c *gin.Context) {
+	_update := func(model any) error {
+		if model == nil {
+			return errors.New("model is nil")
+		}
+		return db.Save(model).Error
+	}
+
+	return func(c *gin.Context) {
+		// id := c.Param("id")
+		var model T
+		// TODO: check exist
+		if err := c.ShouldBindJSON(&model); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := _update(&model); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, model)
+	}
+}
+
+func delete[T any]() func(c *gin.Context) {
+	_delete := func(model any) error {
+		if model == nil {
+			return errors.New("model is nil")
+		}
+		return db.Delete(model).Error
+	}
+	_deleteById := func(id string, model any) error {
+		if model == nil {
+			return errors.New("model is nil")
+		}
+		return db.Where("id = ?", id).Delete(model).Error
+	}
+
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		var model T
+		if id == "" {
+			// TODO: check exist
+			if err := c.ShouldBindJSON(&model); err != nil {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			if err := _delete(&model); err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		} else {
+			if err := _deleteById(id, &model); err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		c.JSON(http.StatusOK, model)
+	}
+}
+
+func CRUD[T any](r *gin.RouterGroup, relativePath string) {
+	r.POST(relativePath, create[T]())
+	r.GET(relativePath+"/:id", get[T]())
+	r.GET(relativePath, get[T]())
+	r.PUT(relativePath+"/:id", update[T]())
+	r.DELETE(relativePath+"/:id", delete[T]())
 }
 
 // controllers
@@ -195,4 +263,47 @@ func init() {
 
 func main() {
 	r.Run(viper.GetString("server.host") + ":" + viper.GetString("server.port"))
+}
+
+
+
+func InitRouter() {
+	r = gin.Default()
+	api := r.Group("/api/v1/")
+	{
+		CRUD[Company](api, "company")
+		CRUD[Team](api, "team")
+		CRUD[Route](api, "route")
+		CRUD[Driver](api, "driver")
+		CRUD[RoadManager](api, "road_manager")
+		CRUD[Violation](api, "violation")
+		CRUD[Vehicle](api, "vehicle")
+		// service apis
+		api.GET("/seats", get[Seat]())
+		api.POST("/seats/:seatID", create[Seat]())
+		api.POST("/seats/random", create[Seat]())
+		api.POST("query/violation/driver", func(c *gin.Context) {
+			var data ReqeustQuery
+			c.ShouldBindJSON(&data)
+			query := db.Model(&Violation{}).Joins("Vehicle").Joins("Team").Joins("Route").Joins("Driver")
+			start, _ := time.Parse(time.RFC3339, data.Time[0])
+			end, _ := time.Parse(time.RFC3339, data.Time[1])
+			query = query.Where("Driver.Name = ? AND occurred_at BETWEEN ? AND ?", data.Name, start, end)
+			var violations []Violation
+			query.Find(&violations)
+			c.JSON(200, violations)
+		})
+		api.POST("query/violation/team", func(c *gin.Context) {
+			var data ReqeustQuery
+			c.ShouldBindJSON(&data)
+			query := db.Model(&Violation{}).Joins("Vehicle").Joins("Team").Joins("Route").Joins("Driver")
+			start, _ := time.Parse(time.RFC3339, data.Time[0])
+			end, _ := time.Parse(time.RFC3339, data.Time[1])
+			query = query.Where("Team.Name = ? AND occurred_at BETWEEN ? AND ?", data.Name, start, end)
+			var violations []Violation
+			query.Find(&violations)
+			c.JSON(200, violations)
+		})
+	}
+	r.NoRoute(gin.WrapH(http.FileServer(http.Dir("./dist/"))))
 }
